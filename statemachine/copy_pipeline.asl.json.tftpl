@@ -1,0 +1,167 @@
+{
+  "Comment": "Copy pipeline: chunk the copy manifest, copy chunks in parallel, summarise",
+  "StartAt": "Init",
+  "TimeoutSeconds": ${timeout_seconds},
+  "States": {
+    "Init": {
+      "Type": "Pass",
+      "Parameters": {
+        "acquisition.$": "$.acquisition",
+        "batch.$": "$.batch",
+        "manifest_run_id.$": "$.manifest_run_id",
+        "run_id.$": "$$.Execution.Name"
+      },
+      "Next": "ChunkCopyManifest"
+    },
+    "ChunkCopyManifest": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${chunker_arn}",
+        "Payload": {
+          "acquisition.$": "$.acquisition",
+          "batch.$": "$.batch",
+          "run_id.$": "$.run_id",
+          "manifest_run_id.$": "$.manifest_run_id"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "TransientS3Error",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.chunked",
+      "Next": "CopyChunks"
+    },
+    "CopyChunks": {
+      "Type": "Map",
+      "ItemsPath": "$.chunked.result.chunks",
+      "MaxConcurrency": ${map_concurrency},
+      "ItemSelector": {
+        "acquisition.$": "$.acquisition",
+        "batch.$": "$.batch",
+        "run_id.$": "$.run_id",
+        "chunk_key.$": "$$.Map.Item.Value"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "CopyChunk",
+        "States": {
+          "CopyChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${copy_arn}",
+              "Payload": {
+                "acquisition.$": "$.acquisition",
+                "batch.$": "$.batch",
+                "run_id.$": "$.run_id",
+                "chunk_key.$": "$.chunk_key"
+              }
+            },
+            "ResultSelector": {
+              "result.$": "$.Payload"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "TransientS3Error",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 5,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Summarise"
+    },
+    "Summarise": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${summary_arn}",
+        "Payload": {
+          "acquisition.$": "$.acquisition",
+          "batch.$": "$.batch",
+          "run_id.$": "$.run_id"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "TransientS3Error",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.summary",
+      "End": true
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "See the failed state's error in the execution history"
+    }
+  }
+}

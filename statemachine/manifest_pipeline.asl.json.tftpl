@@ -1,0 +1,165 @@
+{
+  "Comment": "Manifest pipeline: scan, validate chunks in parallel, merge",
+  "StartAt": "Init",
+  "TimeoutSeconds": ${timeout_seconds},
+  "States": {
+    "Init": {
+      "Type": "Pass",
+      "Parameters": {
+        "acquisition.$": "$.acquisition",
+        "batch.$": "$.batch",
+        "run_id.$": "$$.Execution.Name"
+      },
+      "Next": "Scan"
+    },
+    "Scan": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${scan_arn}",
+        "Payload": {
+          "acquisition.$": "$.acquisition",
+          "batch.$": "$.batch",
+          "run_id.$": "$.run_id"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "TransientS3Error",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.scan",
+      "Next": "ValidateChunks"
+    },
+    "ValidateChunks": {
+      "Type": "Map",
+      "ItemsPath": "$.scan.result.chunks",
+      "MaxConcurrency": ${map_concurrency},
+      "ItemSelector": {
+        "acquisition.$": "$.acquisition",
+        "batch.$": "$.batch",
+        "run_id.$": "$.run_id",
+        "chunk_key.$": "$$.Map.Item.Value"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "ValidateChunk",
+        "States": {
+          "ValidateChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${validate_arn}",
+              "Payload": {
+                "acquisition.$": "$.acquisition",
+                "batch.$": "$.batch",
+                "run_id.$": "$.run_id",
+                "chunk_key.$": "$.chunk_key"
+              }
+            },
+            "ResultSelector": {
+              "result.$": "$.Payload"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "TransientS3Error",
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 5,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "Merge"
+    },
+    "Merge": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${merge_arn}",
+        "Payload": {
+          "acquisition.$": "$.acquisition",
+          "batch.$": "$.batch",
+          "run_id.$": "$.run_id"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "TransientS3Error",
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "PipelineFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "ResultPath": "$.manifest",
+      "End": true
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "See the failed state's error in the execution history"
+    }
+  }
+}
